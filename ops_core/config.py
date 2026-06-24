@@ -29,7 +29,12 @@ class Config:
 def load_config(path: str | Path) -> Config:
     raw = yaml.safe_load(Path(path).read_text()) or {}
     ssh = SshConfig(**(raw.get("ssh") or {}))
-    alerts = AlertsConfig(**(raw.get("alerts") or {}))
+    alerts_raw = dict(raw.get("alerts") or {})
+    # YAML 1.1 (PyYAML) coerces the bare mapping key `on:` to boolean True.
+    # Remap it back so AlertsConfig(**alerts_raw) gets a string keyword.
+    if True in alerts_raw and "on" not in alerts_raw:
+        alerts_raw["on"] = alerts_raw.pop(True)
+    alerts = AlertsConfig(**alerts_raw)
     return Config(
         inventory=raw.get("inventory", "./hosts.yaml"),
         sqlite_path=raw.get("sqlite_path", "./data/ops.db"),
