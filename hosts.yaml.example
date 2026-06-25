@@ -1,0 +1,11 @@
+hosts:
+  - alias: web-1
+    address: 10.0.0.11
+    port: 22
+    user: ops
+    ssh_key: ~/.ssh/ops_ed25519
+    tags: [web, prod]
+  - alias: db-1
+    address: 10.0.0.21
+    tags: [db, prod]
+    # bastion: jump-1   # optional ProxyJump host alias

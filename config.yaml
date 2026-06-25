@@ -1,0 +1,19 @@
+inventory: ./hosts.yaml
+sqlite_path: ./data/ops.db
+concurrency: 16
+ssh:
+  connect_timeout: 8
+  exec_timeout: 30
+schedule:
+  - check: disk_usage
+    cron: "*/10 * * * *"
+    hosts: "tag:prod"
+  - check: failed_services
+    cron: "*/5 * * * *"
+    hosts: "tag:prod"
+  - check: memory_usage
+    cron: "*/10 * * * *"
+    hosts: "tag:prod"
+alerts:
+  webhook: ""   # set to your DingTalk/WeCom/Slack incoming webhook URL
+  on: [warn, crit]
