@@ -8,7 +8,6 @@ import sys
 import time
 from pathlib import Path
 
-# ---- prompt_toolkit ----
 from prompt_toolkit import PromptSession
 from prompt_toolkit.completion import Completer, Completion
 from prompt_toolkit.history import FileHistory
@@ -19,20 +18,15 @@ from prompt_toolkit.formatted_text import HTML
 from prompt_toolkit.auto_suggest import AutoSuggestFromHistory
 from prompt_toolkit.document import Document
 
-# ---- rich ----
 from rich.console import Console
 from rich.markdown import Markdown
 from rich.table import Table
 from rich.panel import Panel
 from rich.text import Text
-from rich.live import Live
-from rich.layout import Layout
 from rich import box
 
-# ---- SDK ----
 from claude_agent_sdk import query, ClaudeAgentOptions
 
-# ---- ops internals ----
 from ops_core.allowlist import Allowlist, DangerDenylist, DEFAULT_READONLY, DEFAULT_DANGER
 from ops_core.config import load_config, apply_api_env
 from ops_core.inventory import load_hosts
@@ -54,26 +48,43 @@ ALLOWED = [
 ]
 DISALLOWED = ["Bash", "Write", "Edit", "WebFetch", "WebSearch", "Task", "Skill"]
 
-# ---- Colour palette (dark terminal theme) ----
+# ---- Colour palette ----
 C = {
     "bg":       "#0f1117",
     "surface":  "#161822",
     "border":   "#2a2d3e",
-    "accent":   "#5eead4",   # teal
-    "accent2":  "#a78bfa",   # purple
+    "accent":   "#5eead4",
+    "accent2":  "#a78bfa",
     "ok":       "#4ade80",
     "warn":     "#fbbf24",
     "crit":     "#f87171",
     "dim":      "#6b7280",
     "text":     "#e2e8f0",
-    "highlight":"#334155",
 }
+
+# ---- Rich Text helpers (no markup, pure Text objects) ----
+# Rich 15.x no longer supports bare [/]; use Text objects exclusively.
+
+def _t(text: str, style: str = "") -> Text:
+    return Text(text, style=style)
+
+def _join(*pieces: Text | str) -> Text:
+    t = Text()
+    for p in pieces:
+        t.append(p)
+    return t
+
+def _dim(text: str) -> Text:      return Text(text, style=C['dim'])
+def _bold(text: str) -> Text:     return Text(text, style="bold")
+def _accent(text: str) -> Text:   return Text(text, style=f"bold {C['accent']}")
+def _ok(text: str) -> Text:       return Text(text, style=C['ok'])
+def _warn(text: str) -> Text:     return Text(text, style=C['warn'])
+def _crit(text: str) -> Text:     return Text(text, style=f"bold {C['crit']}")
+def _err(text: str) -> Text:      return Text(text, style=f"bold {C['crit']}")
 
 _PROMPT_STYLE = Style.from_dict({
     "prompt":        f"bold {C['accent']}",
-    "separator":     C['dim'],
     "bottom-toolbar": f"bg:{C['surface']} {C['dim']}",
-    "bottom-toolbar.highlight": f"bg:{C['surface']} {C['accent']}",
     "completion-menu": f"bg:{C['surface']} {C['text']}",
     "completion-menu.completion": f"bg:{C['surface']} {C['text']}",
     "completion-menu.completion.current": f"bg:{C['accent']} #0f1117 bold",
@@ -81,14 +92,11 @@ _PROMPT_STYLE = Style.from_dict({
 })
 
 
-# ---- Input lexer (syntax highlighting) ----
+# ---- Input lexer ----
 
 class OpsLexer(Lexer):
-    """Highlight host aliases and slash-commands in user input."""
     def __init__(self):
         self.hosts: set[str] = set()
-        self.commands: set[str] = set()
-
     def lex_document(self, document: Document):
         def _lex(_line_number: int):
             text = document.text
@@ -103,8 +111,6 @@ class OpsLexer(Lexer):
                     yield idx - pos, ""
                 if w in self.hosts:
                     yield len(w), f"bold {C['accent']}"
-                elif w in self.commands:
-                    yield len(w), f"italic {C['accent2']}"
                 else:
                     yield len(w), ""
                 pos = idx + len(w)
@@ -117,7 +123,6 @@ def _make_completer() -> Completer:
     cmds = ["/help", "/h", "/quit", "/q", "/exit", "/clear", "/c",
             "/history", "/hosts", "/checks", "/config", "/ping",
             "/healthcheck", "/quick", "/qc", "/security"]
-
     class OpsCompleter(Completer):
         def get_completions(self, document, complete_event):
             text = document.text_before_cursor or ""
@@ -147,14 +152,14 @@ def _make_bindings() -> KeyBindings:
 # ---- Bottom toolbar ----
 
 def _toolbar(hosts, api_ok: bool):
-    """Return a formatted toolbar string showing context."""
     host_count = len(hosts)
     host_str = f"hosts:{host_count}" if host_count else "no hosts"
-    api_str = f"{C['ok']}●{C['dim']} api" if api_ok else f"{C['crit']}●{C['dim']} api"
+    dot = "●" if api_ok else "●"
+    dot_style = C['ok'] if api_ok else C['crit']
     return HTML(
-        f"<bottom-toolbar> {api_str}  │  {host_str}  │  "
-        f"Ctrl-C:interrupt  Ctrl-D:exit  /help  Tab:complete"
-        f" </bottom-toolbar>"
+        f"<bottom-toolbar> <style fg='{dot_style}'>{dot}</style>"
+        f" <style fg='{C[\"dim\"]}'>api</style>  │  {host_str}  │  "
+        f"Ctrl-C:interrupt  Ctrl-D:exit  /help  Tab:complete  </bottom-toolbar>"
     )
 
 
@@ -167,7 +172,6 @@ def _render(message) -> None:
 
     if hasattr(message, "content"):
         for block in message.content:
-            # Text
             text = getattr(block, "text", None)
             if text:
                 try:
@@ -175,15 +179,13 @@ def _render(message) -> None:
                 except Exception:
                     console.print(text)
                 continue
-            # Tool-use
             name = getattr(block, "name", None)
             if name:
                 inp = _brief(getattr(block, "input", {}))
                 console.print(Panel(
-                    f"[bold {C['accent']}]{name}[/] {C['dim']}({inp})[/]",
+                    _join(_accent(name), _dim(f" ({inp})")),
                     border_style=C['accent'], padding=(0, 1), box=box.ROUNDED))
                 continue
-            # Tool-result
             content = getattr(block, "content", None)
             if content is not None:
                 is_error = getattr(block, "is_error", False)
@@ -195,16 +197,16 @@ def _render(message) -> None:
                 elif content:
                     lines.append(str(content))
                 if lines:
-                    body = "\n".join(lines)[:4000]
                     color = C['crit'] if is_error else C['ok']
-                    console.print(Panel(body, border_style=color, padding=(0, 1),
+                    console.print(Panel("\n".join(lines)[:4000],
+                                        border_style=color, padding=(0, 1),
                                         box=box.ROUNDED))
 
     if subtype == "success":
         result = getattr(message, "result", "")
         if result and "Not logged in" in str(result):
             console.print(Panel(
-                "[bold red]Not authenticated[/]\n"
+                "Not authenticated\n"
                 "  export ANTHROPIC_API_KEY=sk-ant-...\n"
                 "  or set api.api_key in config.yaml",
                 border_style="red"))
@@ -220,29 +222,29 @@ def _brief(obj, max_len=100) -> str:
 # ---- Slash commands ----
 
 def _show_help():
-    t = Table(border_style=f"dim {C['border']}", box=box.ROUNDED,
+    t = Table(border_style=C['border'], box=box.ROUNDED,
               show_header=False, padding=(0, 2), title="Commands")
     rows = [
-        ("/help, /h",       "Show this help"),
-        ("/quit, /q",       "Exit"),
-        ("/clear, /c",       "Clear screen"),
-        ("/hosts",          "List managed hosts"),
-        ("/checks",         "Built-in inspection checks"),
-        ("/config",         "Current config"),
-        ("/ping [host]",    "Test SSH connectivity"),
-        ("/healthcheck [h]","Full health check (8 sections)"),
-        ("/quick [h]",      "Quick check (load/mem/disk)"),
-        ("/security [h]",   "Security audit"),
-        ("/history",        "Command history"),
+        ("/help /h",         "Show this help"),
+        ("/quit /q",         "Exit"),
+        ("/clear /c",        "Clear screen"),
+        ("/hosts",           "List managed hosts"),
+        ("/checks",          "Built-in inspection checks"),
+        ("/config",          "Current config"),
+        ("/ping [host]",     "Test SSH connectivity"),
+        ("/healthcheck [h]", "Full health check (8 sections)"),
+        ("/quick [h]",       "Quick check (load/mem/disk)"),
+        ("/security [h]",    "Security audit"),
+        ("/history",         "Command history"),
         ("", ""),
-        ("↑/↓",              "Navigate history"),
+        ("↑/↓",    "Navigate history"),
         ("Ctrl-R",           "Search history"),
         ("Tab",              "Complete /command"),
         ("Ctrl-C",           "Interrupt query"),
         ("Ctrl-D",           "Exit (empty line)"),
     ]
     for key, desc in rows:
-        t.add_row(f"[bold {C['accent']}]{key}[/]", f"{C['dim']}{desc}[/]")
+        t.add_row(_accent(key), _dim(desc))
     console.print(t)
 
 
@@ -261,13 +263,13 @@ def _show_hosts(hosts):
 def _show_checks():
     from ops_core.inspection import BUILTIN_CHECKS
     th = {
-        "disk_usage": "WARN ≥85%  CRIT ≥92%",
-        "disk_inodes": "WARN ≥85%  CRIT ≥92%",
-        "memory_usage": "avail<15% WARN  <5% CRIT",
-        "swap_usage": "WARN >30%  CRIT >60%",
-        "load_avg": "WARN >0.7/core  CRIT >1.0/core",
-        "failed_services": "any failed → CRIT",
-        "zombie_procs": "WARN ≥5  CRIT ≥20",
+        "disk_usage": "max_pct ≥85% WARN  ≥92% CRIT",
+        "disk_inodes": "max_inode_pct ≥85% WARN  ≥92% CRIT",
+        "memory_usage": "pct_avail <15% WARN  <5% CRIT",
+        "swap_usage": "pct >30% WARN  >60% CRIT",
+        "load_avg": "ratio >0.7 WARN  >1.0 CRIT",
+        "failed_services": "failed >0 → CRIT",
+        "zombie_procs": "zombies ≥5 WARN  ≥20 CRIT",
     }
     t = Table(border_style=C['border'], box=box.ROUNDED, title="Inspection Checks")
     t.add_column("Check", style=f"bold {C['accent']}")
@@ -275,11 +277,13 @@ def _show_checks():
     t.add_column("Metric", style=C['accent2'])
     t.add_column("Thresholds", style=C['warn'])
     for name, chk in BUILTIN_CHECKS.items():
-        t.add_row(name, chk.command,
-                  {"disk_usage": "max_pct", "disk_inodes": "max_inode_pct",
-                   "memory_usage": "pct_avail", "swap_usage": "pct",
-                   "load_avg": "ratio", "failed_services": "failed",
-                   "zombie_procs": "zombies"}.get(name, "—"),
+        metric_map = {
+            "disk_usage": "max_pct", "disk_inodes": "max_inode_pct",
+            "memory_usage": "pct_avail", "swap_usage": "pct",
+            "load_avg": "ratio", "failed_services": "failed",
+            "zombie_procs": "zombies",
+        }
+        t.add_row(name, chk.command, metric_map.get(name, "—"),
                   th.get(name, "—"))
     console.print(t)
 
@@ -308,7 +312,7 @@ def _show_config():
 def _show_history(session: PromptSession):
     entries = list(session.history.load_history_strings())
     if not entries:
-        console.print(f"[{C['dim']}]No history yet.[/]")
+        console.print(_dim("No history yet."))
         return
     t = Table(border_style=C['border'], box=box.ROUNDED, show_header=False, padding=(0, 1))
     t.add_column(style=C['dim'], justify="right")
@@ -325,7 +329,7 @@ def _handle_slash(line: str, session: PromptSession, hosts) -> tuple[bool, str |
     cmd = parts[0].lstrip("/").lower()
 
     if cmd in ("q", "quit", "exit"):
-        console.print(f"[{C['dim']}]bye[/]")
+        console.print(_dim("bye"))
         return True, None
     if cmd in ("h", "help"):
         _show_help(); return False, None
@@ -334,21 +338,22 @@ def _handle_slash(line: str, session: PromptSession, hosts) -> tuple[bool, str |
     if cmd == "history":
         _show_history(session); return False, None
     if cmd == "hosts":
-        _show_hosts(hosts) if hosts else console.print(f"[{C['dim']}](no hosts)[/]")
+        if hosts:
+            _show_hosts(hosts)
+        else:
+            console.print(_dim("(no hosts)"))
         return False, None
     if cmd == "checks":
         _show_checks(); return False, None
     if cmd == "config":
         _show_config(); return False, None
 
-    # ---- Context-dependent commands ----
     host = parts[1] if len(parts) > 1 else (_pick_host(hosts) if hosts else None)
 
     if cmd == "ping":
         if not host: return False, None
         return False, (f"Test SSH connectivity to {host}. Run: hostname && uptime && whoami. "
                        "If it fails, report the exact error.")
-
     if cmd == "healthcheck":
         if not host: return False, None
         return False, HEALTHCHECK_PROMPT.format(host=host)
@@ -359,18 +364,18 @@ def _handle_slash(line: str, session: PromptSession, hosts) -> tuple[bool, str |
         if not host: return False, None
         return False, SECURITY_CHECK_PROMPT.format(host=host)
 
-    console.print(f"[{C['dim']}]Unknown: {cmd}.  Try /help[/]")
+    console.print(Text(f"Unknown: {cmd}.  Try /help", style=C['dim']))
     return False, None
 
 
 def _pick_host(hosts) -> str | None:
     if not hosts:
-        console.print(f"[{C['crit']}]No hosts in inventory.[/]"); return None
+        console.print(_crit("No hosts in inventory.")); return None
     if len(hosts) == 1:
         return hosts[0].alias
     aliases = ", ".join(h.alias for h in hosts)
-    console.print(f"[{C['dim']}]Multiple hosts: {aliases}[/]")
-    console.print(f"[{C['dim']}]Usage: /<cmd> <host>[/]")
+    console.print(Text(f"Multiple hosts: {aliases}", style=C['dim']))
+    console.print(Text("Usage: /<cmd> <host>", style=C['dim']))
     return None
 
 
@@ -399,9 +404,6 @@ def build_options(hosts, executor, store, allowlist, denylist) -> ClaudeAgentOpt
 async def chat(options: ClaudeAgentOptions, hosts: list) -> None:
     lexer = OpsLexer()
     lexer.hosts = {h.alias for h in hosts}
-    lexer.commands = {"list_hosts", "run_remote", "run_inspection", "get_host_facts",
-                      "get_inspection_history", "get_inspection_summary",
-                      "get_inspection_trend", "get_correlated_history"}
     api_ok = bool(os.environ.get("ANTHROPIC_API_KEY") or
                   getattr(options, 'env', {}).get("ANTHROPIC_API_KEY", ""))
 
@@ -417,18 +419,22 @@ async def chat(options: ClaudeAgentOptions, hosts: list) -> None:
     )
 
     # Welcome
-    console.print(Panel(
-        f"[bold {C['accent']}]ops-agent[/] {C['dim']}interactive client[/]\n"
-        f"{C['dim']}Type /help for commands  ·  Ctrl-C to interrupt  ·  "
-        f"Ctrl-D to exit[/]",
-        border_style=C['accent'], box=box.ROUNDED, padding=(1, 2)))
+    welcome = Text("\nops-agent  ", style=f"bold {C['accent']}")
+    welcome.append("interactive client\n", style=C['dim'])
+    welcome.append("/help  ", style=C['accent'])
+    welcome.append("for commands  ·  ", style=C['dim'])
+    welcome.append("Ctrl-C", style="bold")
+    welcome.append(" to interrupt  ·  ", style=C['dim'])
+    welcome.append("Ctrl-D", style="bold")
+    welcome.append(" to exit", style=C['dim'])
+    console.print(Panel(welcome, border_style=C['accent'], box=box.ROUNDED, padding=(1, 2)))
     console.print()
 
     while True:
         try:
             prompt = await session.prompt_async()
         except (EOFError, KeyboardInterrupt):
-            console.print(f"\n[{C['dim']}]bye[/]")
+            console.print(_dim("\nbye"))
             return
         if prompt is None:
             continue
@@ -436,7 +442,6 @@ async def chat(options: ClaudeAgentOptions, hosts: list) -> None:
         if not prompt:
             continue
 
-        # Slash commands
         if prompt.startswith("/"):
             try:
                 should_exit, injected = _handle_slash(prompt, session, hosts)
@@ -447,10 +452,9 @@ async def chat(options: ClaudeAgentOptions, hosts: list) -> None:
                 else:
                     continue
             except Exception as exc:
-                console.print(f"[{C['crit']}]{exc}[/]")
+                console.print(_crit(str(exc)))
                 continue
 
-        # Agent query
         async def _stream():
             yield {
                 "type": "user",
@@ -463,14 +467,14 @@ async def chat(options: ClaudeAgentOptions, hosts: list) -> None:
             async for message in query(prompt=_stream(), options=options):
                 _render(message)
         except KeyboardInterrupt:
-            console.print(f"\n[{C['dim']}]interrupted[/]")
+            console.print(_dim("\ninterrupted"))
             continue
         except Exception as exc:
-            console.print(f"\n[{C['crit']}]Error: {exc}[/]")
+            console.print(_crit(f"\nError: {exc}"))
 
         elapsed = time.monotonic() - t0
         if elapsed > 1:
-            console.print(f"[{C['dim']}]({elapsed:.1f}s)[/]")
+            console.print(Text(f"({elapsed:.1f}s)", style=C['dim']))
 
 
 async def _amain(config_path: str) -> None:
