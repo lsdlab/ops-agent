@@ -41,7 +41,8 @@ DEFAULT_READONLY = [
     "uptime", "free*", "df*", "ps*", "ss -tlnp", "ip a", "ip addr*",
     "hostname", "uname*", "last*", "systemctl status *",
     "systemctl list-units*", "journalctl*", "cat /etc/*",
-    "cat /proc/loadavg", "docker ps", "docker stats*",
+    "cat /proc/loadavg*", "cat /proc/meminfo*", "nproc*",
+    "docker ps", "docker stats*",
 ]
 
 DEFAULT_DANGER = [

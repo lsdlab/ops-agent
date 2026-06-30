@@ -41,14 +41,25 @@ def make_can_use_tool(allowlist: Allowlist, denylist: DangerDenylist, approver):
 async def _maybe_await(value):
     if asyncio.iscoroutine(value):
         return await value
+    if callable(value):
+        # Run sync callables in a thread so blocking input() doesn't stall the
+        # event loop while the SDK waits for the approval decision.
+        loop = asyncio.get_running_loop()
+        return await loop.run_in_executor(None, value)
     return value
 
 
-def terminal_approver(command: str) -> bool:
-    print(f"\n[approval required] remote command:\n  {command}\n", file=sys.stderr)
-    while True:
-        ans = input("Run this command? [y/N] ").strip().lower()
-        if ans in ("y", "yes"):
-            return True
-        if ans in ("", "n", "no"):
-            return False
+async def terminal_approver(command: str) -> bool:
+    """Async wrapper — runs input() in a thread to avoid blocking the event loop."""
+    loop = asyncio.get_running_loop()
+
+    def _prompt() -> bool:
+        print(f"\n[approval required] remote command:\n  {command}\n", file=sys.stderr)
+        while True:
+            ans = input("Run this command? [y/N] ").strip().lower()
+            if ans in ("y", "yes"):
+                return True
+            if ans in ("", "n", "no"):
+                return False
+
+    return await loop.run_in_executor(None, _prompt)

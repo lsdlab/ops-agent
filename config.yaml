@@ -8,12 +8,27 @@ schedule:
   - check: disk_usage
     cron: "*/10 * * * *"
     hosts: "tag:prod"
+  - check: disk_inodes
+    cron: "0 * * * *"
+    hosts: "tag:prod"
   - check: failed_services
     cron: "*/5 * * * *"
     hosts: "tag:prod"
   - check: memory_usage
     cron: "*/10 * * * *"
     hosts: "tag:prod"
+  - check: swap_usage
+    cron: "*/10 * * * *"
+    hosts: "tag:prod"
+  - check: load_avg
+    cron: "*/10 * * * *"
+    hosts: "tag:prod"
+  - check: zombie_procs
+    cron: "0 * * * *"
+    hosts: "tag:prod"
+api:
+  api_key: ""   # Anthropic API key; leave empty to use ANTHROPIC_API_KEY env var
+  base_url: "https://api.deepseek.com/anthropic"  # custom base URL; leave empty to use default (or ANTHROPIC_BASE_URL env var)
 alerts:
   webhook: ""   # set to your DingTalk/WeCom/Slack incoming webhook URL
   on: [warn, crit]

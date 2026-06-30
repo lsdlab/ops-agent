@@ -1,6 +1,9 @@
+"""ops-daemon: scheduled read-only inspections + alerts (no LLM)."""
+
 from __future__ import annotations
 import asyncio
 import sys
+import time
 import uuid
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
@@ -12,6 +15,47 @@ from ops_core.inventory import load_hosts
 from ops_core.models import Check, Host, Status
 from ops_core.remote_exec import AsyncsshExecutor, Executor
 from ops_core.store import Store
+
+# ---- Alert state tracking (dedup) ----
+# Key: "host:check" → last status string.  Alert only on transition.
+_alert_state: dict[str, str] = {}
+# For suppressing "noise" on first-ever run.
+_first_run = True
+
+
+def _should_alert(host: str, check: str, new_status: str) -> bool:
+    """Return True only when the status for (host, check) has changed.
+
+    On the very first daemon run, existing WARN/CRIT are reported once
+    (as 'initial state'), so you know the starting condition, but no
+    repeated alerts fire afterwards unless the status actually flips.
+    """
+    global _first_run
+    key = f"{host}:{check}"
+    old = _alert_state.get(key)
+    _alert_state[key] = new_status
+    if old is None:
+        if _first_run:
+            return True   # report initial state
+        return True       # first time seeing this host:check
+    return old != new_status
+
+
+def _emoji(status: str) -> str:
+    return {"ok": "✓", "warn": "△", "crit": "✕"}.get(status, "?")
+
+
+def _colour(status: str) -> str:
+    if status == "crit":
+        return "\033[31m"  # red
+    if status == "warn":
+        return "\033[33m"  # yellow
+    if status == "ok":
+        return "\033[32m"  # green
+    return ""
+
+
+_RST = "\033[0m"
 
 
 def validate_checks(checks: list[Check],
@@ -31,14 +75,48 @@ def validate_checks(checks: list[Check],
 
 async def run_once(hosts: list[Host], checks: list[Check], executor: Executor,
                    store: Store, sink: AlertSink, run_id: str | None = None) -> None:
+    global _first_run
     run_id = run_id or str(uuid.uuid4())
     for h in hosts:
         for chk in checks:
             cr = await run_check(h, chk, executor)
+            status_str = cr.status.value
             store.insert_inspection(run_id=run_id, host=cr.host,
                                     check_name=cr.check_name, status=cr.status,
-                                    value=cr.value)
+                                    value=cr.value, raw_stdout=cr.raw)
+
+            if cr.status in (Status.WARN, Status.CRIT):
+                store.insert_alert(host=cr.host, check_name=cr.check_name,
+                                   status=status_str, value=cr.value,
+                                   raw_stdout=cr.raw)
+
+            # ---- Alert dedup ----
+            if _should_alert(cr.host, cr.check_name, status_str):
+                c = _colour(status_str)
+                ts = time.strftime("%H:%M:%S")
+                if _first_run and cr.status in (Status.WARN, Status.CRIT):
+                    tag = " (initial)"
+                else:
+                    tag = ""
+                print(f"{c}[{status_str.upper()}]{_RST} {cr.host} {cr.check_name}"
+                      f"  {_fmt_value(cr.value)}{tag}  {ts}", flush=True)
+
             await sink.send(cr)
+
+    _first_run = False
+
+
+def _fmt_value(value: dict) -> str:
+    """Compact value display."""
+    if not value:
+        return ""
+    parts = []
+    for k, v in value.items():
+        if isinstance(v, float):
+            parts.append(f"{k}={v:.1f}")
+        else:
+            parts.append(f"{k}={v}")
+    return "  ".join(parts)
 
 
 def _resolve_targets(all_hosts: list[Host], spec: dict) -> list[Host]:
@@ -83,7 +161,7 @@ async def _amain(config_path: str) -> None:
     sink = AlertSink(webhook=cfg.alerts.webhook, severities=set(cfg.alerts.on))
     scheduler = build_scheduler(cfg, hosts, executor, store, sink)
     scheduler.start()
-    print("ops-daemon running", file=sys.stderr)
+    print(f"ops-daemon running  ({len(cfg.schedule)} jobs, {len(hosts)} hosts)")
     try:
         while True:
             await asyncio.sleep(3600)

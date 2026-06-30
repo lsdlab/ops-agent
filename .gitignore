@@ -4,3 +4,5 @@ __pycache__/
 data/
 *.db
 .env
+config.yaml
+hosts.yaml

@@ -54,11 +54,18 @@ class AsyncsshExecutor:
                 stdout=result.stdout or "", stderr=result.stderr or "",
                 rc=int(result.exit_status),
             )
+        except asyncssh.PermissionDenied as exc:
+            return ExecResult(host=host.alias, command=command, stdout="",
+                              stderr=f"SSH auth failed: {exc}", rc=-1)
+        except (asyncssh.ConnectionLost, OSError) as exc:
+            msg = str(exc)
+            if "timed out" in msg.lower() or "timeout" in msg.lower():
+                msg = f"SSH connect timeout ({self.connect_timeout}s)"
+            return ExecResult(host=host.alias, command=command, stdout="",
+                              stderr=f"SSH unreachable: {msg}", rc=-1)
         except Exception as exc:  # noqa: BLE001
-            return ExecResult(
-                host=host.alias, command=command, stdout="", stderr=f"error: {exc}",
-                rc=-1,
-            )
+            return ExecResult(host=host.alias, command=command, stdout="",
+                              stderr=f"SSH error: {type(exc).__name__}: {exc}", rc=-1)
 
     async def close(self) -> None:
         pass
