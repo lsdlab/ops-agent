@@ -55,7 +55,11 @@ class _ApprovalQueue:
 
     def enqueue(self, command: str) -> asyncio.Future[bool]:
         """Queue a command for approval. Returns a Future that resolves when batch is decided."""
-        loop = asyncio.get_event_loop()
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
         future = loop.create_future()
         self._pending.append(command)
         # If this is the first pending, signal the batch approver
@@ -66,6 +70,14 @@ class _ApprovalQueue:
     async def wait_batch(self) -> bool:
         """Wait for user to decide on the batch, then apply to all."""
         await self._result.wait()
+        # If decision was already made (e.g., by tests or programmatic override), skip prompt
+        if self._decision is not None:
+            # Record in cache
+            for cmd in self._pending:
+                _GLOBAL_CACHE.record(cmd, bool(self._decision))
+            self._pending.clear()
+            return bool(self._decision)
+
         # Show batch
         if len(self._pending) == 1:
             print(f"\n[approval required] remote command:\n  {self._pending[0]}\n", file=sys.stderr)
@@ -76,7 +88,11 @@ class _ApprovalQueue:
         print("  [a] approve all  [d] deny all  [n] none  (timeout {}s)\n".format(
             _APPROVAL_TIMEOUT), file=sys.stderr)
 
-        loop = asyncio.get_event_loop()
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
 
         async def _timeout():
             await asyncio.sleep(_APPROVAL_TIMEOUT)

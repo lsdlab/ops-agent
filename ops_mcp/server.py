@@ -106,7 +106,7 @@ def build_ops_tools(*, hosts: list[Host], executor: Executor, store: Store,
           "Use host ALIAS (not IP) from list_hosts output.",
           RunRemoteInput)
     async def run_remote(args):
-        command = args["command"]
+        command = args.get("command")
         if not command:
             return _text("missing required field: command", is_error=True)
         targets_ident = args.get("hosts")

@@ -363,16 +363,22 @@ def _handle_slash(line: str, hosts) -> tuple[bool, str | None]:
 
 def _levenshtein(a: str, b: str) -> int:
     """Simple Levenshtein distance for fuzzy command matching."""
+    if not a:
+        return len(b)
+    if not b:
+        return len(a)
+    # Ensure 'a' is the shorter string for the row-based algorithm
     if len(a) > len(b):
         a, b = b, a
-    costs = list(range(len(a) + 1))
-    for i, ca in enumerate(a):
-        new_costs = [i + 1]
-        for j, cb in enumerate(b):
+    # a is now the shorter (row) string, b is the longer (column) string
+    prev = list(range(len(a) + 1))
+    for j, cb in enumerate(b):
+        curr = [j + 1]
+        for i, ca in enumerate(a):
             cost = 0 if ca == cb else 1
-            new_costs.append(min(costs[j + 1] + 1, new_costs[j] + 1, costs[j] + cost))
-        costs = new_costs
-    return costs[-1]
+            curr.append(min(prev[i + 1] + 1, curr[i] + 1, prev[i] + cost))
+        prev = curr
+    return prev[-1]
 
 
 def _pick_host(hosts) -> str | None:
