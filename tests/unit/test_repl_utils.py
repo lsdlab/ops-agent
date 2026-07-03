@@ -1,6 +1,7 @@
 """Tests for ops_client/__main__ utility functions (no Rich/console I/O)."""
 from ops_client.__main__ import (
     _levenshtein, _truncate_output, _brief, _SLASH_CMDS, _HOST_CMDS,
+    _try_json_panel,
 )
 from ops_core.models import Host
 
@@ -14,6 +15,10 @@ def test_levenshtein_identical():
 def test_levenshtein_empty():
     # Empty vs non-empty = length of non-empty
     assert _levenshtein("", "abc") == 3
+
+
+def test_levenshtein_empty_both():
+    assert _levenshtein("", "") == 0
 
 
 def test_levenshtein_single_char():
@@ -51,8 +56,8 @@ def test_truncate_too_many_lines():
     result = _truncate_output(lines)
     assert "[truncated" in result
     assert "10 more lines" in result
-    # Should contain exactly MAX_LINES lines
-    assert result.count("\n") == 120  # 120 lines + 1 truncation line
+    # Should contain exactly 120 lines + 1 truncation line
+    assert result.count("\n") == 120
 
 
 def test_truncate_too_many_chars():
@@ -80,6 +85,37 @@ def test_truncate_one_long_line():
     assert "[truncated" in result
 
 
+def test_truncate_mixed_boundary():
+    """Lines of varying lengths that cross the char boundary mid-line."""
+    lines = ["x" * 199 for _ in range(40)] + ["y" * 50]  # 7960 + 50 = 8010 > 8000
+    result = _truncate_output(lines)
+    assert "[truncated" in result
+
+
+def test_truncate_101_brief():
+    """_brief with 101 chars should truncate to 100 + ellipsis."""
+    result = _brief("x" * 101)
+    assert len(result) == 101  # 100 chars + ellipsis
+
+
+# ---- JSON panel detection ----
+
+def test_try_json_panel_valid_json():
+    assert _try_json_panel('{"key": "value"}') is not None
+
+
+def test_try_json_panel_valid_array():
+    assert _try_json_panel('[1, 2, 3]') is not None
+
+
+def test_try_json_panel_not_json():
+    assert _try_json_panel("plain text output") is None
+
+
+def test_try_json_panel_partial_json():
+    assert _try_json_panel("some text {not json}") is None
+
+
 # ---- Brief ----
 
 def test_brief_short():
@@ -98,7 +134,7 @@ def test_brief_exact_boundary():
 # ---- Slash command constants ----
 
 def test_slash_cmds_contains_expected():
-    for cmd in ["help", "quit", "retry", "audit", "alerts", "listchecks"]:
+    for cmd in ["help", "quit", "retry", "audit", "alerts", "listchecks", "status"]:
         assert cmd in _SLASH_CMDS
 
 
@@ -107,9 +143,10 @@ def test_host_cmds_subset():
         assert cmd in _HOST_CMDS
 
 
-def test_host_cmds_not_in_slash_cmds():
+def test_host_cmds_in_slash_cmds():
     # _HOST_CMDS commands are also in _SLASH_CMDS (they are slash commands)
-    pass  # intentional no-op — host commands ARE slash commands
+    for cmd in _HOST_CMDS:
+        assert cmd in _SLASH_CMDS
 
 
 # ---- Host resolution helpers ----

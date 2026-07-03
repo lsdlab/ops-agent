@@ -158,7 +158,9 @@ Use `query_alerts` to show warn/crit alerts.
 ## General rules
 
 - Never say "seems fine" without data. Always show the numbers.
-- Compound commands with | && ; $() trigger approval — ask user to confirm.
+- Compound commands with | && ; $() trigger approval in the tool layer.
+  The LLM should still issue them — the user will be prompted to confirm.
+  Do NOT avoid pipes/semicolons out of caution; the approval gate handles safety.
 - Analysis is READ-ONLY. Never propose remediation commands unless the user
   explicitly asks for them.
 - If a host is unreachable, say so clearly and move on.
@@ -187,7 +189,10 @@ After all 8, output:
 - ...
 ### Clean (no issues)
 - ...
-```"""
+```
+
+Note: {{host}} in the summary header is a literal placeholder — replace it
+with the actual host alias when generating the output."""
 
 QUICK_CHECK_PROMPT = """\
 Quick check on host {host}. Only three sections:
