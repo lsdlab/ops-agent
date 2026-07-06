@@ -19,7 +19,7 @@ from ops_core.store import Store
 
 from ops_web.templates import (
     dashboard_page, hosts_page, host_detail_page,
-    inspections_page, chat_page,
+    inspections_page, chat_page, config_page, audit_page,
 )
 from ops_web.chat import SessionStore, run_chat_sse
 
@@ -35,7 +35,8 @@ def build_app(hosts: list[Host], executor: Executor, store: Store) -> Starlette:
     async def dashboard(request: Request) -> HTMLResponse:
         summary = store.query_summary()
         alerts = store.query_alerts(limit=50)
-        return HTMLResponse(dashboard_page(summary, alerts))
+        info = {"version": "0.1.0", "checks": sorted(BUILTIN_CHECKS.keys())}
+        return HTMLResponse(dashboard_page(summary, alerts, info))
 
     async def hosts_list(request: Request) -> HTMLResponse:
         data = []
@@ -64,10 +65,11 @@ def build_app(hosts: list[Host], executor: Executor, store: Store) -> Starlette:
             if len(trend) >= 2:
                 values = [p["value"] for p in trend]
                 delta = float(values[-1]) - float(values[0])
+                css_class = "crit" if delta > 0 else "ok"
                 trend_parts.append(
                     f'<div style="margin-bottom:0.5rem"><strong>{ck}</strong>: '
                     f'{values[0]} → {values[-1]} '
-                    f'(<span class="{"crit" if delta > 0 else "ok"}">{delta:+.1f}</span> '
+                    f'(<span class="{css_class}">{delta:+.1f}</span> '
                     f'over 7d)</div>')
         trend_html = ("<h2>Trends (7d)</h2>" + "".join(trend_parts)) if trend_parts else ""
         return HTMLResponse(host_detail_page(alias, insp, trend_html))
@@ -80,6 +82,15 @@ def build_app(hosts: list[Host], executor: Executor, store: Store) -> Starlette:
 
     async def chat(request: Request) -> HTMLResponse:
         return HTMLResponse(chat_page())
+
+    async def config_page_route(request: Request) -> HTMLResponse:
+        info = {"version": "0.1.0", "checks": sorted(BUILTIN_CHECKS.keys()),
+                "hosts": len(hosts)}
+        return HTMLResponse(config_page(info))
+
+    async def audit_page_route(request: Request) -> HTMLResponse:
+        rows = store.query_audit(limit=200)
+        return HTMLResponse(audit_page(rows))
 
     # ---- API routes ----
 
@@ -122,8 +133,7 @@ def build_app(hosts: list[Host], executor: Executor, store: Store) -> Starlette:
 
     async def api_inspection_detail(request: Request) -> JSONResponse:
         insp_id = request.path_params["id"]
-        rows = store.query_inspection(limit=1)
-        # Simple id lookup — in a real app we'd query by primary key
+        rows = store.query_inspection(limit=500)
         for r in rows:
             if str(r.get("id")) == insp_id:
                 return JSONResponse(r)
@@ -195,21 +205,82 @@ def build_app(hosts: list[Host], executor: Executor, store: Store) -> Starlette:
         return JSONResponse({"ok": False, "error": "session not found"},
                             status_code=404)
 
+    # ---- New API endpoints ----
+
+    async def api_health(request: Request) -> JSONResponse:
+        """Health check endpoint."""
+        return JSONResponse({
+            "status": "ok",
+            "hosts": len(hosts),
+            "checks": len(BUILTIN_CHECKS),
+        })
+
+    async def api_config(request: Request) -> JSONResponse:
+        """Return non-sensitive configuration."""
+        # This endpoint doesn't have access to cfg directly — it's built
+        # inside build_app. We return a minimal status instead.
+        return JSONResponse({
+            "version": "0.1.0",
+            "hosts": len(hosts),
+            "checks": sorted(BUILTIN_CHECKS.keys()),
+        })
+
+    async def api_host_stats(request: Request) -> JSONResponse:
+        """Aggregate stats for a single host."""
+        alias = request.path_params["alias"]
+        summary = store.query_summary(host=alias)
+        alerts = store.query_alerts(host=alias, limit=10)
+        audit = store.query_audit(host=alias, limit=20)
+        return JSONResponse({
+            "alias": alias,
+            "summary": summary,
+            "recent_alerts": alerts,
+            "recent_audit": audit,
+        })
+
+    async def api_host_audit(request: Request) -> JSONResponse:
+        """Command audit log for a single host."""
+        alias = request.path_params["alias"]
+        limit = int(request.query_params.get("limit", 50))
+        rows = store.query_audit(host=alias, limit=limit)
+        return JSONResponse(rows)
+
+    async def api_host_trends(request: Request) -> JSONResponse:
+        """Time-series trends for all checks on a host."""
+        alias = request.path_params["alias"]
+        days = int(request.query_params.get("days", 7))
+        result = {}
+        for check_name in BUILTIN_CHECKS:
+            metric = metric_for_check(check_name)
+            trend = store.query_trend(
+                host=alias, check_name=check_name,
+                metric_key=metric, lookback_days=days)
+            if trend:
+                result[check_name] = {"metric": metric, "points": trend}
+        return JSONResponse(result)
+
     # ---- Routes ----
     routes = [
         Route("/", dashboard, methods=["GET"]),
         Route("/hosts", hosts_list, methods=["GET"]),
         Route("/hosts/{alias}", host_detail, methods=["GET"]),
         Route("/inspections", inspections, methods=["GET"]),
+        Route("/audit", audit_page_route, methods=["GET"]),
+        Route("/config", config_page_route, methods=["GET"]),
         Route("/chat", chat, methods=["GET"]),
         # API
         Route("/api/dashboard", api_dashboard, methods=["GET"]),
         Route("/api/hosts", api_hosts, methods=["GET"]),
         Route("/api/hosts/{alias}", api_host_detail, methods=["GET"]),
+        Route("/api/hosts/{alias}/stats", api_host_stats, methods=["GET"]),
+        Route("/api/hosts/{alias}/audit", api_host_audit, methods=["GET"]),
+        Route("/api/hosts/{alias}/trends", api_host_trends, methods=["GET"]),
         Route("/api/inspections", api_inspections, methods=["GET"]),
         Route("/api/inspections/{id}", api_inspection_detail, methods=["GET"]),
         Route("/api/alerts", api_alerts, methods=["GET"]),
         Route("/api/trends", api_trends, methods=["GET"]),
+        Route("/api/config", api_config, methods=["GET"]),
+        Route("/api/health", api_health, methods=["GET"]),
         Route("/api/chat", api_chat, methods=["GET"]),  # SSE via GET
         Route("/api/chat/{session_id}/approve", api_chat_approve, methods=["POST"]),
     ]
@@ -228,8 +299,10 @@ def metric_for_check(check_name: str) -> str:
     """Return the primary metric key for each built-in check."""
     metrics = {
         "disk_usage": "max_pct",
-        "memory_usage": "pct",
-        "load_avg": "load1",
+        "disk_inodes": "max_inode_pct",
+        "memory_usage": "pct_avail",
+        "swap_usage": "pct",
+        "load_avg": "ratio",
         "failed_services": "failed",
         "zombie_procs": "zombies",
     }

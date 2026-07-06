@@ -30,11 +30,11 @@ def test_metric_for_check_disk():
 
 
 def test_metric_for_check_memory():
-    assert metric_for_check("memory_usage") == "pct"
+    assert metric_for_check("memory_usage") == "pct_avail"
 
 
 def test_metric_for_check_load():
-    assert metric_for_check("load_avg") == "load1"
+    assert metric_for_check("load_avg") == "ratio"
 
 
 def test_metric_for_check_failed():
@@ -239,3 +239,122 @@ def test_api_chat_approve(tmp_path):
                        json={"approved": True})
     assert resp.status_code == 404
     store.close()
+
+
+# ---- New API endpoints ----
+
+def test_api_health(tmp_path):
+    from starlette.testclient import TestClient
+    store = _store(tmp_path)
+    app = build_app(hosts=_hosts(), executor=_executor(), store=store)
+    client = TestClient(app)
+    resp = client.get("/api/health")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["status"] == "ok"
+    assert data["hosts"] == 2
+
+
+def test_api_config(tmp_path):
+    from starlette.testclient import TestClient
+    store = _store(tmp_path)
+    app = build_app(hosts=_hosts(), executor=_executor(), store=store)
+    client = TestClient(app)
+    resp = client.get("/api/config")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert "version" in data
+    assert "checks" in data
+    assert isinstance(data["checks"], list)
+
+
+def test_api_host_stats(tmp_path):
+    from starlette.testclient import TestClient
+    store = _store(tmp_path)
+    store.insert_inspection(run_id="r1", host="web-1", check_name="disk_usage",
+                            status=Status.OK, value={"max_pct": 50.0})
+    store.insert_alert(host="web-1", check_name="disk_usage", status="warn",
+                       value={"max_pct": 88.0})
+    app = build_app(hosts=_hosts(), executor=_executor(), store=store)
+    client = TestClient(app)
+    resp = client.get("/api/hosts/web-1/stats")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["alias"] == "web-1"
+    assert "summary" in data
+    assert "recent_alerts" in data
+
+
+def test_api_host_audit(tmp_path):
+    from starlette.testclient import TestClient
+    store = _store(tmp_path)
+    store.insert_audit(host="web-1", command="df -h", rc=0,
+                       initiated_by="agent", approved_by="auto", verdict="auto_allow",
+                       stdout_excerpt="", stderr_excerpt="")
+    app = build_app(hosts=_hosts(), executor=_executor(), store=store)
+    client = TestClient(app)
+    resp = client.get("/api/hosts/web-1/audit")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert len(data) >= 1
+    assert data[0]["command"] == "df -h"
+
+
+def test_api_host_trends(tmp_path):
+    from starlette.testclient import TestClient
+    store = _store(tmp_path)
+    app = build_app(hosts=_hosts(), executor=_executor(), store=store)
+    client = TestClient(app)
+    resp = client.get("/api/hosts/web-1/trends")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert isinstance(data, dict)
+
+
+def test_dashboard_includes_checks(tmp_path):
+    from starlette.testclient import TestClient
+    store = _store(tmp_path)
+    app = build_app(hosts=_hosts(), executor=_executor(), store=store)
+    client = TestClient(app)
+    resp = client.get("/")
+    assert resp.status_code == 200
+    assert "disk_usage" in resp.text
+
+
+def test_audit_page_exists(tmp_path):
+    from starlette.testclient import TestClient
+    store = _store(tmp_path)
+    app = build_app(hosts=_hosts(), executor=_executor(), store=store)
+    client = TestClient(app)
+    resp = client.get("/audit")
+    assert resp.status_code == 200
+    assert "Audit Log" in resp.text
+
+
+def test_config_page_exists(tmp_path):
+    from starlette.testclient import TestClient
+    store = _store(tmp_path)
+    app = build_app(hosts=_hosts(), executor=_executor(), store=store)
+    client = TestClient(app)
+    resp = client.get("/config")
+    assert resp.status_code == 200
+    assert "Configuration" in resp.text
+
+
+def test_hosts_page_has_search_filter(tmp_path):
+    from starlette.testclient import TestClient
+    store = _store(tmp_path)
+    app = build_app(hosts=_hosts(), executor=_executor(), store=store)
+    client = TestClient(app)
+    resp = client.get("/hosts")
+    assert resp.status_code == 200
+    assert "host-search" in resp.text
+    assert "applyHostFilters" in resp.text
+
+
+def test_metric_for_check_swap():
+    assert metric_for_check("swap_usage") == "pct"
+
+
+def test_metric_for_check_disk_inodes():
+    assert metric_for_check("disk_inodes") == "max_inode_pct"
