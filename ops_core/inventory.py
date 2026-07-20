@@ -8,13 +8,16 @@ def load_hosts(path: str | Path) -> list[Host]:
     raw = yaml.safe_load(Path(path).read_text()) or {}
     out: list[Host] = []
     for row in raw.get("hosts") or []:
+        # Coerce string fields: an unquoted YAML scalar like `alias: 210`
+        # parses as an int, which breaks str-concatenation in the web
+        # templates and rich tables downstream.
         out.append(Host(
-            alias=row["alias"],
-            address=row["address"],
+            alias=str(row["alias"]),
+            address=str(row["address"]),
             port=int(row.get("port", 22)),
-            user=row.get("user", "ops"),
+            user=str(row.get("user", "ops")),
             ssh_key=row.get("ssh_key"),
-            tags=list(row.get("tags") or []),
+            tags=[str(t) for t in (row.get("tags") or [])],
             bastion=row.get("bastion"),
         ))
     return out

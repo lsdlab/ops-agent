@@ -41,7 +41,11 @@ DEFAULT_READONLY = [
     "uptime", "free*", "df*", "ps*", "ss -tlnp", "ip a", "ip addr*",
     "hostname", "uname*", "last*", "systemctl status *",
     "systemctl list-units*", "journalctl*", "cat /etc/*",
-    "cat /proc/loadavg*", "cat /proc/meminfo*", "nproc*",
+    # Exact match (not `cat /proc/loadavg*`): the load_avg check legitimately
+    # uses `;` to combine two reads, but a greedy trailing `*` would also admit
+    # smuggled commands like `cat /proc/loadavg; rm -rf /`. Match the exact
+    # built-in command only.
+    "cat /proc/loadavg; nproc", "cat /proc/meminfo*", "nproc*",
     "docker ps", "docker stats*",
 ]
 

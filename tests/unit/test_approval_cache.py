@@ -1,7 +1,6 @@
-"""Tests for ops_client/approval.py — cache, queue, and gate logic."""
-import asyncio
+"""Tests for ops_client/approval.py — cache and tool-name matching."""
 import time
-from ops_client.approval import _ApprovalCache, _ApprovalQueue, _is_run_remote
+from ops_client.approval import _ApprovalCache, _is_run_remote
 
 
 # ---- _is_run_remote ----
@@ -69,42 +68,3 @@ def test_cache_multiple_entries():
     assert cache.check("cmd1") is True
     assert cache.check("cmd2") is True
     assert cache.check("cmd3") is None
-
-
-# ---- _ApprovalQueue ----
-
-def test_queue_enqueue():
-    queue = _ApprovalQueue()
-    future = queue.enqueue("df -h")
-    assert len(queue._pending) == 1
-    assert isinstance(future, asyncio.Future)
-
-
-def test_queue_batch():
-    queue = _ApprovalQueue()
-    queue.enqueue("df -h")
-    queue.enqueue("free -h")
-    assert len(queue._pending) == 2
-
-
-async def test_queue_wait_batch_resolves():
-    """Test that wait_batch resolves when the event is set."""
-    queue = _ApprovalQueue()
-    queue.enqueue("df -h")
-    # Manually set the decision (simulating user input)
-    queue._decision = True
-    queue._result.set()
-    result = await queue.wait_batch()
-    assert result is True
-    assert len(queue._pending) == 0  # cleared after decision
-
-
-def test_queue_pending_cleared_after_decision():
-    """Verify pending list is cleared after a decision."""
-    queue = _ApprovalQueue()
-    queue.enqueue("cmd1")
-    queue.enqueue("cmd2")
-    queue._decision = False
-    queue._result.set()
-    asyncio.run(queue.wait_batch())
-    assert len(queue._pending) == 0

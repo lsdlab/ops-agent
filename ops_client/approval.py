@@ -10,12 +10,6 @@ Approval cache (LRU, TTL-based):
 - Default TTL is 60 seconds.  A command approved once auto-runs for the next
   minute.  Dangerous commands (matched by the denylist) are never auto-approved
   regardless of cache state.
-
-Batch approval:
-- Commands arriving within the same event-loop tick are accumulated and
-  presented as a single prompt: "[3 pending approvals]: …".
-- The user chooses approve-all / deny-all / none.
-- A 30-second timeout auto-denies if the user is silent.
 """
 
 from __future__ import annotations
@@ -74,102 +68,8 @@ class _ApprovalCache:
             self._cache.popleft()
 
 
-class _ApprovalQueue:
-    """Accumulate pending approvals; user approves/denies in batch."""
-
-    def __init__(self):
-        self._pending: list[str] = []
-        self._result: asyncio.Event = asyncio.Event()
-        self._decision: bool | None = None
-
-    def enqueue(self, command: str) -> asyncio.Future[bool]:
-        """Queue a command for approval. Returns a Future resolved on batch decision."""
-        # There is always a running loop in production (called from can_use_tool
-        # which runs inside the query loop). Creating a new loop here would be
-        # a bug — but we handle it gracefully for tests.
-        try:
-            loop = asyncio.get_running_loop()
-        except RuntimeError:
-            loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(loop)
-        future = loop.create_future()
-        self._pending.append(command)
-        # If this is the first pending, signal the batch approver
-        if len(self._pending) == 1:
-            self._result.set()
-        return future
-
-    async def wait_batch(self) -> bool:
-        """Wait for user to decide on the batch, then apply to all."""
-        await self._result.wait()
-        # If decision was already made (e.g., by tests or programmatic override),
-        # skip the interactive prompt.
-        if self._decision is not None:
-            for cmd in self._pending:
-                _GLOBAL_CACHE.record(cmd, bool(self._decision))
-            self._pending.clear()
-            return bool(self._decision)
-
-        # Show batch
-        if len(self._pending) == 1:
-            print(f"\n[approval required] remote command:\n  {self._pending[0]}\n",
-                  file=sys.stderr)
-        else:
-            print(f"\n[{len(self._pending)} pending approvals]:\n", file=sys.stderr)
-            for i, cmd in enumerate(self._pending, 1):
-                print(f"  {i}. {cmd}\n", file=sys.stderr)
-        print("  [a] approve all  [d] deny all  [n] none  (timeout {}s)\n".format(
-            _APPROVAL_TIMEOUT), file=sys.stderr)
-
-        # Ensure we have a running event loop for the timeout task.
-        try:
-            loop = asyncio.get_running_loop()
-        except RuntimeError:
-            loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(loop)
-
-        # Timeout task — auto-deny after _APPROVAL_TIMEOUT seconds.
-        async def _timeout():
-            await asyncio.sleep(_APPROVAL_TIMEOUT)
-            if not self._result.is_set():
-                self._decision = False
-                self._result.set()
-
-        timeout_task = asyncio.create_task(_timeout())
-
-        # Blocking prompt in a thread to avoid blocking the event loop.
-        def _prompt() -> None:
-            while True:
-                try:
-                    ans = input("[approve all / deny all / none] ").strip().lower()
-                except (EOFError, KeyboardInterrupt):
-                    self._decision = False
-                    self._result.set()
-                    return
-                if ans in ("a", "yes", "y", "all", "approve"):
-                    self._decision = True
-                    break
-                if ans in ("d", "no", "n", "none", "deny"):
-                    self._decision = False
-                    break
-
-        await loop.run_in_executor(None, _prompt)
-        timeout_task.cancel()
-        try:
-            await timeout_task
-        except asyncio.CancelledError:
-            pass
-
-        # Record in cache and resolve
-        for cmd in self._pending:
-            _GLOBAL_CACHE.record(cmd, bool(self._decision))
-        self._pending.clear()
-        return bool(self._decision)
-
-
-# Global instances (for terminal use only; tests create per-instance caches)
+# Global cache (for terminal use only; tests create per-instance caches).
 _GLOBAL_CACHE = _ApprovalCache()
-_GLOBAL_QUEUE = _ApprovalQueue()
 
 
 def make_can_use_tool(allowlist: Allowlist, denylist: DangerDenylist, approver,

@@ -141,7 +141,7 @@ def test_resolve_by_alias_list():
 def test_validate_ok():
     checks = list(BUILTIN_CHECKS.values())
     problems = validate_checks(checks)
-    assert isinstance(problems, list)
+    assert problems == []  # every built-in must pass allowlist validation
 
 
 def test_validate_denylist_match():
@@ -157,4 +157,22 @@ def test_validate_allowlist_miss():
     bad_check = Check(name="custom", command="curl http://evil.com",
                       parse=lambda x: {}, evaluate=lambda x: Status.OK)
     problems = validate_checks([bad_check])
+    assert any("allowlist" in p for p in problems)
+
+
+def test_validate_accepts_load_avg_metachar():
+    # load_avg legitimately uses `;` to combine two reads. The daemon's
+    # allowlist must accept this exact built-in command (it does NOT apply
+    # the metachar downgrade the interactive client does).
+    problems = validate_checks([BUILTIN_CHECKS["load_avg"]])
+    assert problems == []
+
+
+def test_validate_rejects_smuggled_loadavg():
+    # A `;`-smuggled command must NOT ride the load_avg allowlist pattern.
+    # Regression guard for the greedy-fnmatch hole (was `cat /proc/loadavg*`).
+    from ops_core.models import Check
+    smuggled = Check(name="evil", command="cat /proc/loadavg; rm -rf /tmp/x",
+                     parse=lambda x: {}, evaluate=lambda x: Status.OK)
+    problems = validate_checks([smuggled])
     assert any("allowlist" in p for p in problems)
