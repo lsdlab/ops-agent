@@ -1,7 +1,7 @@
 # ops-agent 设计文档（Design Spec）
 
 - **日期**: 2026-06-23
-- **状态**: Draft（待用户 review）
+- **状态**: v1 已实现（2026-07-20 对齐）；Web 控制台与 analysis 已提前落地
 - **作者**: brainstorming session
 - **相关 SDK**: `claude-agent-sdk` 0.1.81（已在本机验证 API）
 
@@ -32,7 +32,7 @@
 ## 3. 非目标（YAGNI，明确不做，留 v2）
 
 - 多用户 / 登录 / RBAC。
-- Web UI / 控制台。
+- ~~Web UI / 控制台。~~ **已提前实现**（`ops_web`，见 §6.5）。
 - 动态 inventory 发现（自动扫描网段、云 API 同步）。
 - agent 驱动的定时巡检（LLM 不参与无人值守巡检）。
 - Windows / WinRM。
@@ -80,14 +80,16 @@
 - **被管机器之间**：彼此无任何关系、无互联。
 - **daemon 与 client 之间**：v1 不做 IPC，通过**共享同一个 SQLite 文件**解耦（daemon 写巡检结果，client 读历史 + 自己执行交互命令）。未来如需「让 daemon 立即重跑某巡检」再加 Unix socket / 本地 HTTP。
 
-## 6. 组件设计（一个包 `ops-agent`，四个入口）
+## 6. 组件设计（一个包 `ops-agent`，六个入口）
 
 | 组件 | 类型 | 职责 | 用 LLM |
 |---|---|---|---|
-| **ops_core** | 纯库 | 所有运维能力的实现（无 IO 副作用以外的状态） | 否 |
+| **ops_core** | 纯库 | 所有运维能力的实现（无 IO 副作用以外的状态）+ `analysis.py` 纯格式化 | 否 |
 | **ops_mcp** | MCP server（薄壳） | 把 ops_core 包成 MCP 工具给 agent 调 | 否 |
 | **ops_daemon** | 常驻进程 | 定时巡检 + 告警 | 否 |
-| **ops_client** | 交互进程 | claude-agent-sdk agent 循环 + 终端对话 | **是** |
+| **ops_client** | 交互进程 | claude-agent-sdk agent 循环 + 终端 REPL | **是** |
+| **ops_web** | 常驻进程 | Starlette Web 控制台 + SSE 流式聊天（复用 ops_mcp 审批门） | **是** |
+| **ops_bootstrap** | 一次性 CLI | SSH 到被管机创建 `ops` 用户 / 装公钥 / 写 sudoers | 否 |
 
 ### 6.1 ops_core（纯库，无 LLM）
 
@@ -114,6 +116,12 @@
 | `get_inspection_history` | `host, check?, since?` | `inspection_runs[]` | 自动 |
 | `get_host_facts` | `host` | 画像 dict | 自动 |
 
+> **实现已扩展至 11 个工具**（2026-07-20）：在上表 5 个基础上，另实现了
+> `get_inspection_summary`、`get_inspection_trend`、`get_correlated_history`、
+> `list_checks`、`query_audit`、`query_alerts`。均为只读，自动放行。
+> 这些工具配合 `ops_core/analysis.py` 的纯格式化函数，把巡检/趋势/关联结果
+> 渲染成 LLM 易读文本，支撑「巡检结果智能解读与根因建议」（原 v2 项，已提前落地）。
+
 实现方式：作为 **in-process MCP server**（`McpSdkServerConfig`）直接接入 client，无需子进程；daemon 不用 MCP，直接 import ops_core。
 
 ### 6.3 ops_daemon（常驻，无 LLM）
@@ -131,6 +139,32 @@
   - `system_prompt` = 运维助手人设（谨慎、最小权限、危险操作必须确认）。
   - `disallowed_tools` = 屏蔽内置危险工具（如原生 Bash/Write），只留 MCP 工具，避免 agent 绕过 SSH 层直接改中心机。
 - 终端对话：你输入「查所有 db 标签机器的磁盘」→ agent 调 `list_hosts` + `run_inspection` → 返回结果并解读。
+
+### 6.5 ops_web（常驻，用 LLM）
+
+> **v2 项提前落地**。Starlette + uvicorn（默认 `http://0.0.0.0:8080`）。
+
+- **页面**：dashboard（`/`）、主机列表（`/hosts`）、主机详情含 7 日趋势
+  （`/hosts/{alias}`）、巡检（`/inspections`）、审计（`/audit`）、配置
+  （`/config`）、聊天（`/chat`）。
+- **JSON API**：`/api/dashboard`、`/api/hosts`、`/api/hosts/{alias}`、
+  `/api/hosts/{alias}/{stats,audit,trends}`、`/api/inspections[/{id}]`、
+  `/api/alerts`、`/api/trends`、`/api/config`、`/api/health`。
+- **聊天走 SSE**：`GET /api/chat` 以 Server-Sent Events 流式返回 agent 输出；
+  复用与 REPL 相同的 `ops_mcp` server 与 `can_use_tool` 审批门。需人工审批时，
+  前端调 `POST /api/chat/{session_id}/approve`（`{"approved": bool}`）放行/拒绝。
+- **安全边界不变**：远程执行仍经 policy 三档裁决 + 全量审计；Web 层不绕过 SSH/policy。
+
+### 6.6 ops_bootstrap（一次性 CLI，无 LLM）
+
+> 新增组件。把「被管机器手工建 ops 用户」自动化为一条命令。
+
+- 读 inventory，SSH 到每台目标（默认 `root`，可 `--user/--key/--port`），
+  通过 `stdin` 投递内嵌 `bootstrap.sh` 并 `sudo bash -s` 执行：创建 `ops` 用户、
+  写入 `authorized_keys`、生成限定命令的 sudoers 片段（`ss/systemctl/lsof`）。
+- 选项：`--tag` / `--hosts` 选目标，`--pubkey` 指定公钥（否则从 `--key` 推导或
+  stdin 读取），`--skip-sudo`，`--dry-run`。并发受 `config.concurrency` 限制。
+- 失败（如无 root SSH）时打印人工兜底 one-liner。
 
 ## 7. 数据流
 
@@ -298,10 +332,13 @@ ops-agent/
   pyproject.toml
   config.yaml
   hosts.yaml
-  ops_core/      # inventory, remote_exec, allowlist, policy, inspection, store, alerting, config
-  ops_mcp/       # MCP server（包 ops_core）
+  ops_core/      # inventory, remote_exec, allowlist, policy, inspection, store, alerting, config, analysis
+  ops_mcp/       # MCP server（包 ops_core，11 工具）
   ops_daemon/    # APScheduler 定时巡检入口
-  ops_client/    # claude-agent-sdk 交互入口
+  ops_client/    # claude-agent-sdk 交互 REPL 入口
+  ops_web/       # Starlette Web 控制台 + SSE 聊天（v2 提前落地）
+  ops_bootstrap/ # 被管机一次性 SSH 引导（建 ops 用户/装 key/sudoers）
+  scripts/       # bootstrap.sh（被管机手动兜底脚本）
   tests/
   docs/superpowers/specs/2026-06-23-ops-agent-design.md
 ```
@@ -350,8 +387,12 @@ ops-agent/
 
 ## 18. 未来 / 延期（v2+）
 
-多用户与 RBAC、Web 控制台、动态 inventory、agent 辅助的巡检结果智能解读与根因建议（只读，仍可触发）、WinRM、HA daemon、密钥管理、严重度→渠道路由、auto-remediation（经审批）。
+**已提前落地（原列于此）**：~~Web 控制台~~（`ops_web`，§6.5）、
+~~agent 辅助的巡检结果智能解读与根因建议~~（`ops_core/analysis.py` + 只读分析工具，§6.2）。
+
+**仍未做**：多用户与 RBAC、动态 inventory、WinRM、HA daemon、密钥管理、
+严重度→渠道路由、auto-remediation（经审批）。
 
 ---
 
-**下一步**：用户 review 本 spec → 通过后进入 `writing-plans` skill 生成实现计划。
+**状态**：v1 已实现并通过测试（2026-07-20 对齐）。后续工作见 §18 未做项。
