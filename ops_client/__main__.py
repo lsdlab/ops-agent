@@ -544,7 +544,7 @@ def build_options(hosts, executor, store, allowlist, denylist, max_turns: int = 
     server = build_server(hosts=hosts, executor=executor, store=store)
     can_use_tool = make_can_use_tool(allowlist, denylist, terminal_approver)
     env_vars = {}
-    for var in ("ANTHROPIC_API_KEY", "ANTHROPIC_BASE_URL"):
+    for var in ("ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_BASE_URL"):
         val = os.environ.get(var)
         if val:
             env_vars[var] = val

@@ -320,7 +320,7 @@ def _build_agent_options(hosts, executor, store):
 
     def build(allowlist, denylist, can_use_tool):
         env_vars = {}
-        for var in ("ANTHROPIC_API_KEY", "ANTHROPIC_BASE_URL"):
+        for var in ("ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_BASE_URL"):
             val = _os.environ.get(var)
             if val:
                 env_vars[var] = val
