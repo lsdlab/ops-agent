@@ -161,7 +161,8 @@ async def _amain(config_path: str) -> None:
     sink = AlertSink(webhook=cfg.alerts.webhook, severities=set(cfg.alerts.on))
     scheduler = build_scheduler(cfg, hosts, executor, store, sink)
     scheduler.start()
-    print(f"ops-daemon running  ({len(cfg.schedule)} jobs, {len(hosts)} hosts)")
+    print(f"ops-daemon running  ({len(cfg.schedule)} jobs, {len(hosts)} hosts)",
+          flush=True)
     try:
         while True:
             await asyncio.sleep(3600)
