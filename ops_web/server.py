@@ -36,21 +36,11 @@ def build_app(hosts: list[Host], executor: Executor, store: Store) -> Starlette:
         summary = store.query_summary()
         alerts = store.query_alerts(limit=50)
         info = {"version": "0.1.0", "checks": sorted(BUILTIN_CHECKS.keys())}
-        return HTMLResponse(dashboard_page(summary, alerts, info))
+        return HTMLResponse(dashboard_page(summary, alerts,
+                                           _host_status_rows(hosts, store), info))
 
     async def hosts_list(request: Request) -> HTMLResponse:
-        data = []
-        for h in hosts:
-            rows = store.query_inspection(host=h.alias, limit=5)
-            worst = "ok"
-            for r in rows:
-                if r.get("status") == "crit":
-                    worst = "crit"; break
-                if r.get("status") == "warn":
-                    worst = "warn"
-            data.append({"alias": h.alias, "address": h.address,
-                         "worst_status": worst, "tags": h.tags})
-        return HTMLResponse(hosts_page(data))
+        return HTMLResponse(hosts_page(_host_status_rows(hosts, store)))
 
     async def host_detail(request: Request) -> HTMLResponse:
         alias = request.path_params["alias"]
@@ -307,6 +297,22 @@ def metric_for_check(check_name: str) -> str:
         "zombie_procs": "zombies",
     }
     return metrics.get(check_name, "value")
+
+
+def _host_status_rows(hosts, store):
+    """Build per-host rows with a worst-status rollup (for the host matrix)."""
+    data = []
+    for h in hosts:
+        rows = store.query_inspection(host=h.alias, limit=5)
+        worst = "ok"
+        for r in rows:
+            if r.get("status") == "crit":
+                worst = "crit"; break
+            if r.get("status") == "warn":
+                worst = "warn"
+        data.append({"alias": str(h.alias), "address": str(h.address),
+                     "worst_status": worst, "tags": list(h.tags)})
+    return data
 
 
 def _build_agent_options(hosts, executor, store):

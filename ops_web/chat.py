@@ -88,11 +88,12 @@ class SessionStore:
 
 
 def make_web_can_use_tool(allowlist: Allowlist, denylist: DangerDenylist,
-                          sessions: SessionStore):
+                          sessions: SessionStore, send_event=None):
     """Build a can_use_tool callback that interacts with the web frontend.
 
     The *session* is discovered via contextvars or passed through a closure.
     For simplicity we look up the session from a thread/asyncio-local registry.
+    `send_event` pushes SSE frames (e.g. approval_required) to the browser.
     """
     policy = Policy(allowlist, denylist)
     # Use a simple mutable cell so the SSE endpoint can set the current session.
@@ -111,12 +112,12 @@ def make_web_can_use_tool(allowlist: Allowlist, denylist: DangerDenylist,
             return PermissionResultAllow(updated_input=tool_input)
         if verdict.is_deny:
             return PermissionResultDeny(message=verdict.reason or "denied by policy")
-        # Requires approval — delegate to web session.
+        # Requires approval — notify the browser, then block for the decision.
         session = current_session
         if session is None:
             return PermissionResultDeny(message="no active web session for approval")
-        # Send approval_required SSE event; the caller (run_chat_sse) does this
-        # before calling into the agent loop, so here we just block.
+        if send_event is not None:
+            send_event("approval_required", command)
         approved = await session.await_approval(command)
         if approved:
             return PermissionResultAllow(updated_input=tool_input)
@@ -133,7 +134,7 @@ async def run_chat_sse(message: str, session_id: str | None,
     send_event(event_type: str, data: str) is called for each SSE frame.
     """
     can_use_tool_fn, set_session = make_web_can_use_tool(
-        allowlist, denylist, sessions)
+        allowlist, denylist, sessions, send_event=send_event)
 
     if session_id:
         session = sessions.get(session_id)
@@ -160,21 +161,25 @@ async def run_chat_sse(message: str, session_id: str | None,
         async for msg in query(prompt=_stream(), options=options):
             if hasattr(msg, "content"):
                 for block in msg.content:
-                    block_type = getattr(block, "type", None)
-                    if block_type == "text":
-                        send_event("text", getattr(block, "text", ""))
-                    elif block_type == "tool_use":
+                    # Attribute-based detection (mirrors the CLI renderer) —
+                    # the SDK's blocks don't reliably expose a string `.type`,
+                    # so matching on `.type == "text"` silently dropped text.
+                    text = getattr(block, "text", None)
+                    if text:
+                        send_event("text", text)
+                        continue
+                    name = getattr(block, "name", None)
+                    if name:
                         send_event("tool_use",
-                                   f"{getattr(block, 'name', '?')}({_brief(getattr(block, 'input', {}))})")
-                    elif block_type == "tool_result":
-                        content = getattr(block, "content", "")
+                                   f"{name}({_brief(getattr(block, 'input', {}))})")
+                        continue
+                    content = getattr(block, "content", None)
+                    if content is not None:
                         if isinstance(content, list):
-                            content = content[0].get("text", "") if content else ""
+                            texts = [c.get("text", "") for c in content
+                                     if isinstance(c, dict) and c.get("type") == "text"]
+                            content = " ".join(t for t in texts if t)
                         send_event("tool_result", _brief(content))
-            # Check for pending approval after each message
-            if session._pending_approval and not session._pending_approval.is_set():
-                send_event("approval_required",
-                           "Approval required for run_remote (check modal)")
     except Exception as exc:
         send_event("error", str(exc))
     finally:

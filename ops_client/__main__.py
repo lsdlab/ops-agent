@@ -48,7 +48,15 @@ ALLOWED = [
     "get_host_facts", "get_inspection_summary", "get_inspection_trend",
     "get_correlated_history", "list_checks", "query_audit", "query_alerts",
 ]
-DISALLOWED = ["Bash", "Write", "Edit", "WebFetch", "WebSearch", "Task", "Skill"]
+# Enforce the design's "MCP-tools-only" rule: block every built-in tool that
+# could touch the central box's filesystem / shell / network, so the agent can
+# only act on remote hosts via the ops MCP server (run_remote still gated by
+# the approval policy). Read/Glob/Grep were previously missing here, letting
+# the agent read the central box directly (config, keys, source).
+DISALLOWED = [
+    "Bash", "Read", "Write", "Edit", "NotebookEdit",
+    "Glob", "Grep", "WebFetch", "WebSearch", "Task", "Skill",
+]
 
 C = {
     "bg":       "#0f1117",

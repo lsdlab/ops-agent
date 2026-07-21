@@ -328,7 +328,7 @@ def test_audit_page_exists(tmp_path):
     client = TestClient(app)
     resp = client.get("/audit")
     assert resp.status_code == 200
-    assert "Audit Log" in resp.text
+    assert "Command Audit" in resp.text
 
 
 def test_config_page_exists(tmp_path):
@@ -349,7 +349,7 @@ def test_hosts_page_has_search_filter(tmp_path):
     resp = client.get("/hosts")
     assert resp.status_code == 200
     assert "host-search" in resp.text
-    assert "applyHostFilters" in resp.text
+    assert "host-filter-status" in resp.text
 
 
 def test_metric_for_check_swap():
